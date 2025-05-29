@@ -1,42 +1,48 @@
+# Dependencies
+node_modules/
+package-lock.json
+
 # Environment variables
 .env
 .env.local
-.env.*.local
+.env.production
 
-# Authentication tokens
-data/wfx_tokens.json
-
-# Dependencies
-node_modules/
+# Data and tokens
+data/
+*.tmp
+wfx_tokens.json
 
 # Reports and output
-reports/*.xlsx
-reports/*.csv
+reports/
+*.xlsx
+*.pdf
 
 # Archives
 archive/
 
+# IDE and system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
 # Logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
 # Temporary files
-*.tmp
-*.temp
-*.cache
-~$*
+temp/
+tmp/
+.cache/
 
-# CSV data files (optional - uncomment if you don't want to track CSV files)
-# csv_files/*.csv 
+# Test files
+*.test.csv
+
+# OS files
+Thumbs.db
+desktop.ini 

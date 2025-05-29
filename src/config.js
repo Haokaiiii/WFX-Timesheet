@@ -5,15 +5,22 @@ require('dotenv').config();
 const path = require('path');
 
 module.exports = {
-  // WorkflowMax API Configuration
+  // WorkflowMax API Configuration (Updated for Xero platform)
   wfx: {
-    clientId: process.env.WFX_CLIENT_ID || '9efa49bf-2ee5-40c0-a97e-5a23426b0a0d',
-    clientSecret: process.env.WFX_CLIENT_SECRET || '8ESV8OobAlzSVeHo9eKAM6usFFO9FxYx5knHq2fy',
-    accountId: process.env.WFX_ACCOUNT_ID || '9c11e87e-66eb-4a73-9b1a-995950a1e745',
-    baseUrl: 'https://api.workflowmax.com',
-    authUrl: 'https://oauth.workflowmax.com/oauth/authorize',
-    tokenUrl: 'https://oauth.workflowmax.com/oauth/token',
-    callbackUrl: process.env.CALLBACK_URL || 'http://localhost:3001/oauth/callback'
+    clientId: process.env.WFX_CLIENT_ID,
+    clientSecret: process.env.WFX_CLIENT_SECRET,
+    accountId: process.env.WFX_ACCOUNT_ID,
+    baseUrl: process.env.WFX_BASE_URL || 'https://api.xero.com/workflowmax/3.0',
+    authUrl: process.env.WFX_AUTH_URL || 'https://login.xero.com/identity/connect/authorize',
+    tokenUrl: process.env.WFX_TOKEN_URL || 'https://identity.xero.com/connect/token',
+    callbackUrl: process.env.CALLBACK_URL || 'http://localhost:3001/oauth/callback',
+    scopes: process.env.OAUTH_SCOPES || 'openid profile email workflowmax offline_access'
+  },
+  
+  // Debug Configuration
+  debug: {
+    auth: process.env.DEBUG_AUTH === 'true',
+    api: process.env.DEBUG_API === 'true'
   },
   
   // Server Configuration

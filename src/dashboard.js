@@ -170,8 +170,35 @@ app.get('/oauth/callback', async (req, res) => {
   }
   
   try {
+    // Load code verifier if it exists
+    const verifierPath = path.join(config.directories.data, 'code_verifier.tmp');
+    let codeVerifier;
+    try {
+      codeVerifier = await fs.readFile(verifierPath, 'utf8');
+      // Clean up verifier file
+      await fs.unlink(verifierPath).catch(() => {});
+    } catch (e) {
+      console.log('No code verifier found, proceeding without PKCE');
+    }
+
     // Exchange code for token
+    console.log(chalk.green('\n📥 OAuth callback received with code'));
+    
+    // If we have a code verifier, set it on the client
+    if (codeVerifier) {
+      wfxClient.codeVerifier = codeVerifier;
+    }
+    
     const tokens = await wfxClient.exchangeCodeForToken(code);
+    console.log(chalk.green('✅ Tokens exchanged successfully'));
+    
+    // Test the API connection immediately
+    try {
+      const staff = await wfxClient.getStaff();
+      console.log(chalk.green(`✅ API test successful - ${staff.length} staff members found`));
+    } catch (testError) {
+      console.error(chalk.red('❌ API test failed after authentication:'), testError.message);
+    }
     
     // Success page
     res.send(`

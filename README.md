@@ -1,247 +1,232 @@
 # WFX Timesheet Comparison Tool
 
-A powerful tool to compare vehicle tracking data with WorkflowMax timesheets, helping identify discrepancies and ensure accurate time tracking.
+A powerful tool for comparing GPS trip data from CSV files with WorkflowMax timesheets to ensure accuracy and identify discrepancies.
 
-## 🚀 Quick Start
+## Features
+
+- 📊 **Dashboard Interface**: Web-based dashboard for easy comparison and visualization
+- 🔐 **OAuth 2.0 Authentication**: Secure integration with WorkflowMax API
+- 📈 **Smart Job Matching**: Advanced algorithms to match GPS trips with timesheet entries
+- 📍 **Location Validation**: Verify job locations using geocoding
+- ⚠️ **Discrepancy Alerts**: Automatic detection of timesheet issues
+- 📁 **CSV Processing**: Parse and analyze GPS trip data from CSV files
+- 🚀 **Performance Optimized**: Caching and efficient API usage
+
+## Prerequisites
+
+- Node.js 14+ and npm
+- WorkflowMax account with API access
+- OAuth application credentials from WorkflowMax
+- CSV files with GPS trip data
+
+## Installation
+
+1. **Clone the repository**:
+   ```bash
+   git clone <repository-url>
+   cd WFX-Timesheet
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment variables**:
+   Create a `.env` file with your WorkflowMax credentials:
+   ```env
+   # WorkflowMax OAuth credentials
+   WFX_CLIENT_ID=your-client-id
+   WFX_CLIENT_SECRET=your-client-secret
+   WFX_ACCOUNT_ID=your-account-id
+
+   # OAuth URLs (WorkflowMax platform)
+   WFX_AUTH_URL=https://oauth.workflowmax.com/oauth/authorize
+   WFX_TOKEN_URL=https://oauth.workflowmax.com/oauth/token
+   WFX_BASE_URL=https://api.workflowmax.com/api/2.0
+
+   # Local server configuration
+   PORT=3000
+   CALLBACK_URL=https://your-ngrok-url.ngrok-free.app/oauth/callback
+
+   # OAuth scopes
+   OAUTH_SCOPES=openid profile email workflowmax offline_access
+
+   # Debug settings
+   DEBUG_AUTH=true
+   DEBUG_API=true
+   ```
+
+## Authentication Setup
+
+### Step 1: Create WorkflowMax OAuth App
+
+1. Log into WorkflowMax
+2. Navigate to Settings → API → OAuth Applications
+3. Create a new application with:
+   - Name: WFX Timesheet Comparison
+   - Redirect URI: Your callback URL (must match `.env` exactly)
+   - Scopes: Select all required scopes
+
+### Step 2: Configure Callback URL
+
+For development, use [ngrok](https://ngrok.com):
 
 ```bash
-# 1. Install dependencies
-npm install
+# Start ngrok to tunnel port 3001
+ngrok http 3001
 
-# 2. Configure environment (.env file)
-cp .env.example .env
-# Edit .env with your WorkflowMax OAuth credentials
-
-# 3. Authenticate with WorkflowMax
-npm run auth
-
-# 4. Start the dashboard
-npm start
-```
-
-## 📋 Prerequisites
-
-- **Node.js 14+** and npm
-- **WorkflowMax account** with API access
-- **OAuth credentials** from WorkflowMax (Client ID & Secret)
-- **Vehicle tracking CSV files**
-
-## 🛠️ Installation & Setup
-
-### 1. Environment Configuration
-
-Create a `.env` file with your WorkflowMax OAuth credentials:
-
-```env
-# WorkflowMax OAuth credentials
-WFX_CLIENT_ID=your_client_id_here
-WFX_CLIENT_SECRET=your_client_secret_here
-WFX_ACCOUNT_ID=your_account_id_here
-
-# Server configuration
-PORT=3001
+# Update .env with the ngrok URL
 CALLBACK_URL=https://your-ngrok-url.ngrok-free.app/oauth/callback
 ```
 
-### 2. OAuth Setup in WorkflowMax
-
-1. Log into WorkflowMax
-2. Go to **Settings → API → OAuth Applications**
-3. Create a new OAuth application with:
-   - **Redirect URI**: Your callback URL (ngrok URL or `http://localhost:8080/oauth/callback`)
-   - **Scopes**: `openid profile email workflowmax`
-
-### 3. Authentication
-
-The tool automatically detects the best authentication method based on your callback URL:
+### Step 3: Authenticate
 
 ```bash
-# Authenticate (auto-detects best method)
+# Clear any existing authentication
+npm run auth-clear
+
+# Start authentication
 npm run auth
 
 # Check authentication status
-npm run auth:status
-
-# Clear saved tokens (if needed)
-npm run auth:clear
+npm run auth-status
 ```
 
-## 📁 Project Structure
+The browser will open for WorkflowMax login. After authorization, you'll be redirected to your callback URL.
 
-```
-WFX-Timesheet/
-├── src/
-│   ├── dashboard.js        # Web dashboard server
-│   ├── compare.js          # CLI comparison tool
-│   ├── timesheetComparison.js  # Core comparison logic
-│   ├── wfxApi.js          # WorkflowMax API client
-│   ├── auth.js            # Unified authentication
-│   ├── config.js          # Configuration
-│   └── cleanup.js         # Maintenance utilities
-├── csv_files/             # Vehicle tracking CSV files
-├── reports/               # Generated Excel reports
-├── webapp/                # Dashboard frontend
-├── data/                  # Cached data and tokens
-└── .env                   # Environment variables
-```
+### Manual Authentication
 
-## 🎯 Usage
+If automatic authentication doesn't work:
 
-### Web Dashboard (Recommended)
+1. Run `node show-auth-url.js` to get the authorization URL
+2. Visit the URL in your browser
+3. Run `node complete-workflowmax-auth.js` and paste the callback URL
+
+## Usage
+
+### 1. Start the Dashboard
 
 ```bash
 npm start
-# Open http://localhost:3001 in your browser
+# Dashboard opens at http://localhost:3000
 ```
 
-Features:
-- Real-time timesheet comparison
-- Visual analytics and charts
-- Download Excel reports
-- Monitor accuracy trends
+### 2. Add Staff Configuration
 
-### Command Line Interface
-
-```bash
-# Compare specific staff member
-npm run compare -- -s Ali_M
-
-# Compare all staff
-npm run compare:all
-
-# Compare with custom date range
-npm run compare -- -s Ali_M -f 2024-01-01 -t 2024-01-31
-
-# List configured staff
-node src/compare.js list-staff
-
-# Add new staff member
-node src/compare.js add-staff
-```
-
-## 📊 CSV File Format
-
-Place CSV files in `csv_files/` directory, named as `StaffID.csv` (e.g., `Ali_M.csv`).
-
-Required columns:
-- **Date/Time**: Trip timestamps
-- **Duration**: Trip duration
-- **From/To**: Location addresses
-- **Distance**: Optional but recommended
-
-Example CSV structure:
-```csv
-Date,Start Time,End Time,From,To,Duration,Distance
-2024-01-15,08:30:00,09:15:00,"123 Main St","456 Client Ave",0:45:00,15.2
-```
-
-## 🔧 Staff Configuration
-
-Edit `src/config.js` to configure staff members:
+Edit `src/config.js` to add staff members:
 
 ```javascript
 staff: {
-  'John_D': {
-    fullName: 'John Doe',
-    homeAddress: '123 Main St, City',
-    wfxId: 'wfx_staff_id',  // From WorkflowMax
+  'FirstName_LastInitial': {
+    fullName: 'Full Name',
+    homeAddress: 'Full Address',
+    wfxId: 'workflowmax-staff-id',
     defaultHourlyRate: 45.00,
     vehicleId: 'VEH001'
   }
 }
 ```
 
-## 📈 Performance Features
+### 3. Add CSV Files
 
-- **API Caching**: Reduces API calls by caching responses
-- **Token Persistence**: Saves authentication for future sessions
-- **Parallel Processing**: Handles multiple staff efficiently
-- **Smart Matching**: Intelligent trip-to-timesheet matching
+Place GPS trip CSV files in the `csv_files` directory:
+- Filename format: `FirstName_LastInitial.csv`
+- Must match staff ID in config
 
-## 🚨 Troubleshooting
+### 4. Run Comparisons
 
-### 403 Forbidden Error
-```bash
-# Clear old tokens and re-authenticate
-npm run auth:clear
-npm run auth
+1. Open the dashboard
+2. Select staff member
+3. Choose date range
+4. Click "Compare"
+
+## Project Structure
+
 ```
+WFX-Timesheet/
+├── src/                    # Source code
+│   ├── auth-workflowmax.js # OAuth authentication
+│   ├── config.js          # Configuration
+│   ├── dashboard.js       # Web dashboard
+│   ├── timesheetComparison.js # Core comparison logic
+│   ├── wfxApi.js         # WorkflowMax API client
+│   └── ...               # Other modules
+├── csv_files/            # Input CSV files
+├── data/                 # Token storage
+├── reports/              # Generated reports
+├── webapp/               # Dashboard UI
+└── .env                  # Environment variables
+```
+
+## Authentication Scripts
+
+- `npm run auth` - Start authentication process
+- `npm run auth-status` - Check authentication status
+- `npm run auth-clear` - Clear saved tokens
+- `npm run auth-refresh` - Refresh access token
+
+## API Endpoints
+
+The dashboard provides these endpoints:
+
+- `GET /api/staff` - List configured staff
+- `POST /api/compare` - Run timesheet comparison
+- `GET /api/summary` - Get comparison summaries
+- `GET /api/stats` - Performance statistics
+- `POST /api/cache/clear` - Clear API cache
+
+## Token Management
+
+- **Access Token**: Expires in 30 minutes (auto-refreshed)
+- **Refresh Token**: Expires in 60 days
+- Tokens stored in `data/wfx_tokens.json`
+
+## Troubleshooting
 
 ### Authentication Issues
-1. Verify OAuth credentials in `.env`
-2. Check callback URL matches OAuth app settings
-3. Ensure WorkflowMax OAuth app is active
 
-### CSV Processing Errors
-- Check date format (YYYY-MM-DD or DD-Mon-YY)
-- Verify required columns exist
-- Ensure staff ID matches configuration
+1. **"invalid_client" Error**
+   - Verify client ID and secret in `.env`
+   - Check WorkflowMax OAuth app settings
 
-### Port Already in Use
-```bash
-# Windows
-netstat -ano | findstr :3001
-taskkill /PID <PID> /F
+2. **"redirect_uri_mismatch" Error**
+   - Ensure callback URL matches exactly in both `.env` and WorkflowMax
+   - Check for http vs https
+   - Remove trailing slashes
 
-# Mac/Linux
-lsof -ti:3001 | xargs kill -9
+3. **403 Forbidden**
+   - Verify WorkflowMax subscription includes API access
+   - Check account permissions
+   - Try re-authenticating
+
+### Port Conflicts
+
+If port 3000 is in use:
+1. Change `PORT` in `.env`
+2. Restart the dashboard
+
+### Debug Mode
+
+Enable debug logging in `.env`:
+```env
+DEBUG_AUTH=true
+DEBUG_API=true
 ```
 
-## 🔍 System Check
+## Security Notes
 
-Run the comprehensive system check:
-```bash
-npm run quick-start
-```
+- Never commit `.env` file
+- Keep client secret secure
+- Use HTTPS for production
+- Tokens are stored locally in `data/` directory
 
-This will:
-- Verify all dependencies
-- Check environment configuration
-- Test WorkflowMax connection
-- Validate CSV files
-- Provide setup guidance
+## Support
 
-## 🧹 Maintenance
+1. Check WorkflowMax API documentation
+2. Run diagnostics: `npm run diagnose`
+3. Review debug logs with `DEBUG_AUTH=true`
 
-```bash
-# Archive old reports and clean temporary files
-npm run cleanup
+## License
 
-# View all available commands
-npm run
-```
-
-## 📊 API Endpoints
-
-When dashboard is running:
-
-| Endpoint | Method | Description |
-|----------|---------|-------------|
-| `/api/staff` | GET | List all configured staff |
-| `/api/compare` | POST | Run comparison for a staff member |
-| `/api/results/:staffId` | GET | Get comparison results |
-| `/api/summary` | GET | Get summary for all staff |
-| `/api/auth/status` | GET | Check authentication status |
-| `/api/cache/clear` | POST | Clear API cache |
-
-## 🔒 Security Notes
-
-- Never commit `.env` file to version control
-- Keep OAuth credentials secure
-- Use HTTPS (ngrok) for production callbacks
-- Tokens are encrypted and stored locally
-
-## 📝 License
-
-ISC License
-
-## 💡 Tips
-
-1. **For production use**: Set up a permanent ngrok URL or deploy to a server
-2. **Large datasets**: Process in smaller date ranges for better performance
-3. **Regular use**: Schedule automated comparisons using cron/Task Scheduler
-4. **Accuracy**: Ensure CSV timestamps match actual work times
-
----
-
-**Need help?** Run `npm run quick-start` for a guided setup or check the logs in your terminal for detailed error messages. 
+ISC 

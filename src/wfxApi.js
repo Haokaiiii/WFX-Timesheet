@@ -2,6 +2,7 @@ const axios = require('axios');
 const config = require('./config');
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 
 class WFXApiClient {
   constructor() {
@@ -9,12 +10,30 @@ class WFXApiClient {
     this.refreshToken = null;
     this.tokenExpiry = null;
     this.cache = new Map();
-    this.tokenPath = path.join(config.directories.data, 'wfx_tokens.json');
+    this.tokenPath = process.env.TOKEN_STORAGE_PATH || path.join(config.directories.data, 'wfx_tokens.json');
+    this.codeVerifier = null;
     
     // Initialize with saved tokens if available
     this.loadSavedTokens().catch(() => {
       // Ignore errors if no saved tokens exist
     });
+  }
+
+  /**
+   * Generate PKCE code verifier and challenge
+   */
+  generatePKCE() {
+    // Generate code verifier
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    this.codeVerifier = verifier;
+
+    // Generate code challenge
+    const challenge = crypto
+      .createHash('sha256')
+      .update(verifier)
+      .digest('base64url');
+
+    return { verifier, challenge };
   }
 
   /**
@@ -87,38 +106,72 @@ class WFXApiClient {
   }
 
   /**
-   * Generate OAuth authorization URL
+   * Generate OAuth authorization URL with PKCE
    * @param {string} customCallbackUrl - Optional custom callback URL
    * @returns {string} Authorization URL
    */
   getAuthorizationUrl(customCallbackUrl = null) {
+    const { challenge } = this.generatePKCE();
+    
+    if (config.debug.auth) {
+      console.log('🔐 Generating OAuth URL with config:', {
+        authUrl: config.wfx.authUrl,
+        clientId: config.wfx.clientId,
+        callbackUrl: customCallbackUrl || config.wfx.callbackUrl,
+        scopes: config.wfx.scopes
+      });
+    }
+    
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: config.wfx.clientId,
       redirect_uri: customCallbackUrl || config.wfx.callbackUrl,
-      scope: 'openid profile email workflowmax',
-      state: Math.random().toString(36).substring(7)
+      scope: config.wfx.scopes,
+      state: crypto.randomBytes(16).toString('hex'),
+      code_challenge: challenge,
+      code_challenge_method: 'S256'
     });
 
-    return `${config.wfx.authUrl}?${params.toString()}`;
+    const authUrl = `${config.wfx.authUrl}?${params.toString()}`;
+    
+    if (config.debug.auth) {
+      console.log('🔗 Generated OAuth URL:', authUrl);
+    }
+    
+    return authUrl;
   }
 
   /**
-   * Exchange authorization code for access token
+   * Exchange authorization code for access token using PKCE
    * @param {string} code - Authorization code
    * @param {string} customCallbackUrl - Optional custom callback URL
    * @returns {Promise<Object>} Token response
    */
   async exchangeCodeForToken(code, customCallbackUrl = null) {
+    if (!this.codeVerifier) {
+      throw new Error('No code verifier found. Please start the auth flow again.');
+    }
+
     try {
-      // Use application/x-www-form-urlencoded for OAuth token requests
       const params = new URLSearchParams({
         grant_type: 'authorization_code',
         client_id: config.wfx.clientId,
         client_secret: config.wfx.clientSecret,
         code: code,
-        redirect_uri: customCallbackUrl || config.wfx.callbackUrl
+        redirect_uri: customCallbackUrl || config.wfx.callbackUrl,
+        code_verifier: this.codeVerifier
       });
+
+      if (config.debug.auth) {
+        console.log('🔄 Token exchange request:', {
+          tokenUrl: config.wfx.tokenUrl,
+          grant_type: 'authorization_code',
+          client_id: config.wfx.clientId,
+          code: code.substring(0, 20) + '...',
+          redirect_uri: customCallbackUrl || config.wfx.callbackUrl,
+          code_verifier: this.codeVerifier ? this.codeVerifier.substring(0, 10) + '...' : 'none'
+        });
+      }
 
       const response = await axios.post(config.wfx.tokenUrl, params.toString(), {
         headers: {
@@ -130,9 +183,33 @@ class WFXApiClient {
       this.refreshToken = response.data.refresh_token;
       this.tokenExpiry = Date.now() + (response.data.expires_in * 1000);
 
+      if (config.debug.auth) {
+        console.log('✅ Token exchange successful:', {
+          access_token: this.accessToken ? this.accessToken.substring(0, 20) + '...' : 'none',
+          refresh_token: this.refreshToken ? 'received' : 'none',
+          expires_in: response.data.expires_in
+        });
+      }
+
       await this.saveTokens();
       return response.data;
     } catch (error) {
+      // Handle specific PKCE errors
+      if (error.response?.data?.error === 'invalid_grant' && 
+          error.response?.data?.error_description?.includes('code verifier')) {
+        console.error('PKCE verification failed. Please try authenticating again.');
+        await this.clearTokens();
+        throw new Error('PKCE verification failed. The authorization code may have expired or been used. Please try authenticating again.');
+      }
+      
+      // Handle invalid code errors
+      if (error.response?.data?.error === 'invalid_request' && 
+          error.response?.data?.hint?.includes('decrypt')) {
+        console.error('Authorization code is invalid or expired. Please try authenticating again.');
+        await this.clearTokens();
+        throw new Error('The authorization code is invalid or has expired. Please try authenticating again.');
+      }
+
       console.error('Error exchanging code for token:', error.response?.data || error.message);
       
       // Log detailed error for debugging
@@ -162,6 +239,10 @@ class WFXApiClient {
         refresh_token: this.refreshToken
       });
 
+      if (config.debug.auth) {
+        console.log('🔄 Refreshing access token...');
+      }
+
       const response = await axios.post(config.wfx.tokenUrl, params.toString(), {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded'
@@ -171,6 +252,10 @@ class WFXApiClient {
       this.accessToken = response.data.access_token;
       this.refreshToken = response.data.refresh_token;
       this.tokenExpiry = Date.now() + (response.data.expires_in * 1000);
+
+      if (config.debug.auth) {
+        console.log('✅ Token refreshed successfully');
+      }
 
       await this.saveTokens();
       return response.data;
@@ -214,7 +299,10 @@ class WFXApiClient {
     };
 
     if (useAuth) {
-      requestConfig.headers['Authorization'] = `Bearer ${this.accessToken}`;
+      // Use WorkflowMax headers format
+      requestConfig.headers['authorization'] = `Bearer ${this.accessToken}`;
+      // Use account_id header for WorkflowMax (not xero-tenant-id)
+      requestConfig.headers['account_id'] = config.wfx.accountId;
     }
 
     if (method === 'GET' && data) {
@@ -263,9 +351,28 @@ class WFXApiClient {
     }
 
     const url = `${config.wfx.baseUrl}${endpoint}`;
+    
+    // Debug logging
+    if (config.debug.api) {
+      console.log(`\n🔍 API Request Debug:`);
+      console.log(`  URL: ${url}`);
+      console.log(`  Method: ${method}`);
+      console.log(`  Account ID: ${config.wfx.accountId}`);
+      console.log(`  Has Token: ${!!this.accessToken}`);
+      console.log(`  Token Preview: ${this.accessToken ? this.accessToken.substring(0, 20) + '...' : 'none'}`);
+      if (data) {
+        console.log(`  Request Data:`, data);
+      }
+    }
 
     try {
       const response = await this.makeRequest(method, url, data, true);
+      
+      if (config.debug.api) {
+        console.log(`✅ API Request successful for ${endpoint}`);
+        console.log(`  Response status: ${response.status}`);
+        console.log(`  Response data length: ${JSON.stringify(response.data).length} chars`);
+      }
       
       // Cache GET responses
       if (method === 'GET' && useCache) {
@@ -282,6 +389,16 @@ class WFXApiClient {
       if (error.response?.status === 403) {
         await this.clearTokens();
         console.error('🔒 Authentication failed (403). Please re-authenticate with: npm run auth');
+        console.error('🔍 Failed URL was:', url);
+        
+        if (config.debug.api) {
+          console.error('🔍 Response details:', {
+            status: error.response.status,
+            statusText: error.response.statusText,
+            headers: error.response.headers,
+            data: error.response.data
+          });
+        }
       }
       
       console.error('API request error:', error.response?.data || error.message);
@@ -296,7 +413,7 @@ class WFXApiClient {
    * @returns {Promise<Array>} Array of jobs
    */
   async getJobs(startDate, endDate) {
-    return this.apiRequest('/api/2.0/jobs', 'GET', {
+    return this.apiRequest(`/job.api/list`, 'GET', {
       from: startDate,
       to: endDate,
       detailed: true
@@ -310,7 +427,7 @@ class WFXApiClient {
    * @returns {Promise<Array>} Array of timesheets
    */
   async getTimesheets(startDate, endDate) {
-    return this.apiRequest('/api/2.0/time', 'GET', {
+    return this.apiRequest(`/time.api/list`, 'GET', {
       from: startDate,
       to: endDate,
       detailed: true
@@ -322,7 +439,7 @@ class WFXApiClient {
    * @returns {Promise<Array>} Array of staff
    */
   async getStaff() {
-    return this.apiRequest('/api/2.0/staff', 'GET');
+    return this.apiRequest(`/staff.api/list`, 'GET');
   }
 
   /**
@@ -331,7 +448,7 @@ class WFXApiClient {
    * @returns {Promise<Object>} Staff details
    */
   async getStaffMember(staffId) {
-    return this.apiRequest(`/api/2.0/staff/${staffId}`, 'GET');
+    return this.apiRequest(`/staff.api/get/${staffId}`, 'GET');
   }
 
   /**
@@ -340,7 +457,7 @@ class WFXApiClient {
    * @returns {Promise<Object>} Job details
    */
   async getJob(jobId) {
-    return this.apiRequest(`/api/2.0/jobs/${jobId}`, 'GET');
+    return this.apiRequest(`/job.api/get/${jobId}`, 'GET');
   }
 
   /**
@@ -349,7 +466,7 @@ class WFXApiClient {
    * @returns {Promise<Object>} Created timesheet
    */
   async createTimesheet(timesheetData) {
-    return this.apiRequest('/api/2.0/time', 'POST', timesheetData, false);
+    return this.apiRequest(`/time.api/add`, 'POST', timesheetData, false);
   }
 
   /**
@@ -359,7 +476,7 @@ class WFXApiClient {
    * @returns {Promise<Object>} Updated timesheet
    */
   async updateTimesheet(timesheetId, timesheetData) {
-    return this.apiRequest(`/api/2.0/time/${timesheetId}`, 'PUT', timesheetData, false);
+    return this.apiRequest(`/time.api/update`, 'PUT', { ...timesheetData, id: timesheetId }, false);
   }
 
   /**

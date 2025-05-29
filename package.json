@@ -1,45 +1,43 @@
 {
   "name": "wfx-timesheet-comparison",
-  "version": "3.0.0",
-  "description": "Compare GPS trip data with WorkflowMax timesheets",
-  "main": "src/timesheetComparison.js",
+  "version": "2.0.0",
+  "description": "WorkflowMax Timesheet Comparison Tool",
+  "main": "src/dashboard.js",
   "scripts": {
+    "setup": "node setup.js",
     "start": "node src/dashboard.js",
-    "dev": "nodemon src/dashboard.js",
-    "auth": "node src/auth.js",
-    "auth:clear": "node src/auth.js clear",
-    "auth:status": "node src/auth.js status",
-    "compare": "node src/compare.js compare",
-    "compare:all": "node src/compare.js compare --all",
-    "setup": "node src/compare.js setup",
+    "auth": "node src/auth-workflowmax.js auth",
+    "auth-status": "node src/auth-workflowmax.js status",
+    "auth-clear": "node src/auth-workflowmax.js clear",
+    "auth-refresh": "node src/auth-workflowmax.js refresh",
+    "test-auth": "node src/test-auth.js",
+    "compare": "node src/timesheetComparison.js",
+    "diagnose": "node src/diagnose-oauth.js",
     "cleanup": "node src/cleanup.js",
     "quick-start": "node src/quick-start.js"
   },
   "keywords": [
-    "timesheet",
     "workflowmax",
+    "timesheet",
     "comparison",
-    "tracking"
+    "csv",
+    "dashboard"
   ],
-  "author": "ISA",
+  "author": "Your Name",
   "license": "ISC",
   "dependencies": {
-    "axios": "^1.7.7",
+    "axios": "^1.6.2",
     "chalk": "^4.1.2",
-    "cli-progress": "^3.12.0",
-    "commander": "^12.1.0",
-    "cors": "^2.8.5",
-    "csv-parse": "^5.6.0",
-    "dotenv": "^16.4.7",
-    "exceljs": "^4.4.0",
-    "express": "^4.21.2",
-    "inquirer": "^8.2.6",
-    "open": "^10.1.2"
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "fast-csv": "^4.3.6",
+    "jsonwebtoken": "^9.0.2",
+    "moment": "^2.29.4",
+    "open": "^8.4.2",
+    "winston": "^3.11.0"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.9"
-  },
-  "bin": {
-    "wfx-compare": "./src/compare.js"
+  "engines": {
+    "node": ">=14.0.0"
   }
 }
