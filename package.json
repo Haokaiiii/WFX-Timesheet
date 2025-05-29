@@ -1,0 +1,45 @@
+{
+  "name": "wfx-timesheet-comparison",
+  "version": "3.0.0",
+  "description": "Compare GPS trip data with WorkflowMax timesheets",
+  "main": "src/timesheetComparison.js",
+  "scripts": {
+    "start": "node src/dashboard.js",
+    "dev": "nodemon src/dashboard.js",
+    "auth": "node src/auth.js",
+    "auth:clear": "node src/auth.js clear",
+    "auth:status": "node src/auth.js status",
+    "compare": "node src/compare.js compare",
+    "compare:all": "node src/compare.js compare --all",
+    "setup": "node src/compare.js setup",
+    "cleanup": "node src/cleanup.js",
+    "quick-start": "node src/quick-start.js"
+  },
+  "keywords": [
+    "timesheet",
+    "workflowmax",
+    "comparison",
+    "tracking"
+  ],
+  "author": "ISA",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "chalk": "^4.1.2",
+    "cli-progress": "^3.12.0",
+    "commander": "^12.1.0",
+    "cors": "^2.8.5",
+    "csv-parse": "^5.6.0",
+    "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "inquirer": "^8.2.6",
+    "open": "^10.1.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  },
+  "bin": {
+    "wfx-compare": "./src/compare.js"
+  }
+}
