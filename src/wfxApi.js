@@ -1,8 +1,10 @@
 const axios = require('axios');
 const config = require('./config');
-const fs = require('fs').promises;
+const fs = require('fs');
+const fsPromises = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
+const xml2js = require('xml2js');
 
 class WFXApiClient {
   constructor() {
@@ -13,10 +15,8 @@ class WFXApiClient {
     this.tokenPath = process.env.TOKEN_STORAGE_PATH || path.join(config.directories.data, 'wfx_tokens.json');
     this.codeVerifier = null;
     
-    // Initialize with saved tokens if available
-    this.loadSavedTokens().catch(() => {
-      // Ignore errors if no saved tokens exist
-    });
+    // Initialize with saved tokens if available - synchronous to avoid race conditions
+    this.tokensLoaded = this.loadSavedTokensSync();
   }
 
   /**
@@ -37,17 +37,58 @@ class WFXApiClient {
   }
 
   /**
-   * Load saved tokens from file
+   * Load saved tokens synchronously on initialization
+   */
+  loadSavedTokensSync() {
+    try {
+      const tokenData = fs.readFileSync(this.tokenPath, 'utf8');
+      const tokens = JSON.parse(tokenData);
+      
+      // Check if access token is expired using the correct field name
+      if (tokens.access_token && tokens.expires_at && tokens.expires_at > Date.now()) {
+        this.accessToken = tokens.access_token;
+        this.refreshToken = tokens.refresh_token;
+        this.tokenExpiry = tokens.expires_at;
+        console.log('📱 Loaded saved WFX tokens');
+        return true;
+      } else {
+        // Tokens expired, clear them
+        this.clearTokensSync();
+        return false;
+      }
+    } catch (error) {
+      // No saved tokens or invalid format
+      return false;
+    }
+  }
+
+  /**
+   * Clear saved tokens synchronously
+   */
+  clearTokensSync() {
+    try {
+      fs.unlinkSync(this.tokenPath);
+      this.accessToken = null;
+      this.refreshToken = null;
+      this.tokenExpiry = null;
+    } catch {
+      // File might not exist
+    }
+  }
+
+  /**
+   * Load saved tokens from file (async version)
    */
   async loadSavedTokens() {
     try {
-      const tokenData = await fs.readFile(this.tokenPath, 'utf8');
+      const tokenData = await fsPromises.readFile(this.tokenPath, 'utf8');
       const tokens = JSON.parse(tokenData);
       
-      if (tokens.accessToken && tokens.tokenExpiry > Date.now()) {
-        this.accessToken = tokens.accessToken;
-        this.refreshToken = tokens.refreshToken;
-        this.tokenExpiry = tokens.tokenExpiry;
+      // Check if access token is expired using the correct field name
+      if (tokens.access_token && tokens.expires_at && tokens.expires_at > Date.now()) {
+        this.accessToken = tokens.access_token;
+        this.refreshToken = tokens.refresh_token;
+        this.tokenExpiry = tokens.expires_at;
         console.log('📱 Loaded saved WFX tokens');
       } else {
         // Tokens expired, clear them
@@ -63,7 +104,7 @@ class WFXApiClient {
    */
   async clearTokens() {
     try {
-      await fs.unlink(this.tokenPath);
+      await fsPromises.unlink(this.tokenPath);
       this.accessToken = null;
       this.refreshToken = null;
       this.tokenExpiry = null;
@@ -73,20 +114,35 @@ class WFXApiClient {
   }
 
   /**
-   * Save tokens to file
+   * Save tokens to file (matching WorkflowMaxAuthManager format)
    */
   async saveTokens() {
     try {
-      await fs.mkdir(config.directories.data, { recursive: true });
+      await fsPromises.mkdir(config.directories.data, { recursive: true });
       const tokenData = {
-        accessToken: this.accessToken,
-        refreshToken: this.refreshToken,
-        tokenExpiry: this.tokenExpiry,
-        savedAt: new Date().toISOString()
+        access_token: this.accessToken,
+        refresh_token: this.refreshToken,
+        expires_at: this.tokenExpiry,
+        saved_at: new Date().toISOString(),
+        // Preserve any existing organization_id
+        organization_id: await this.getOrganizationId()
       };
-      await fs.writeFile(this.tokenPath, JSON.stringify(tokenData, null, 2));
+      await fsPromises.writeFile(this.tokenPath, JSON.stringify(tokenData, null, 2));
     } catch (error) {
       console.warn('⚠️ Could not save tokens:', error.message);
+    }
+  }
+
+  /**
+   * Get organization ID from existing token file
+   */
+  async getOrganizationId() {
+    try {
+      const data = await fsPromises.readFile(this.tokenPath, 'utf8');
+      const tokens = JSON.parse(data);
+      return tokens.organization_id;
+    } catch {
+      return undefined;
     }
   }
 
@@ -106,19 +162,21 @@ class WFXApiClient {
   }
 
   /**
-   * Generate OAuth authorization URL with PKCE
+   * Generate OAuth authorization URL (No PKCE for WorkflowMax)
    * @param {string} customCallbackUrl - Optional custom callback URL
    * @returns {string} Authorization URL
    */
   getAuthorizationUrl(customCallbackUrl = null) {
-    const { challenge } = this.generatePKCE();
+    // WorkflowMax OAuth does not use PKCE. It uses a simple state parameter.
+    const state = crypto.randomBytes(16).toString('hex');
     
     if (config.debug.auth) {
-      console.log('🔐 Generating OAuth URL with config:', {
+      console.log('🔐 Generating WFX OAuth URL with config:', {
         authUrl: config.wfx.authUrl,
         clientId: config.wfx.clientId,
         callbackUrl: customCallbackUrl || config.wfx.callbackUrl,
-        scopes: config.wfx.scopes
+        scopes: config.wfx.scopes,
+        prompt: 'consent'
       });
     }
     
@@ -127,65 +185,65 @@ class WFXApiClient {
       client_id: config.wfx.clientId,
       redirect_uri: customCallbackUrl || config.wfx.callbackUrl,
       scope: config.wfx.scopes,
-      state: crypto.randomBytes(16).toString('hex'),
-      code_challenge: challenge,
-      code_challenge_method: 'S256'
+      state: state,
+      prompt: 'consent' // As per WFM docs
     });
 
     const authUrl = `${config.wfx.authUrl}?${params.toString()}`;
     
     if (config.debug.auth) {
-      console.log('🔗 Generated OAuth URL:', authUrl);
+      console.log('🔗 Generated WFX OAuth URL (No PKCE):', authUrl);
     }
     
     return authUrl;
   }
 
   /**
-   * Exchange authorization code for access token using PKCE
+   * Exchange authorization code for access token (No PKCE for WorkflowMax)
    * @param {string} code - Authorization code
    * @param {string} customCallbackUrl - Optional custom callback URL
    * @returns {Promise<Object>} Token response
    */
   async exchangeCodeForToken(code, customCallbackUrl = null) {
-    if (!this.codeVerifier) {
-      throw new Error('No code verifier found. Please start the auth flow again.');
-    }
-
+    // WorkflowMax: client_secret is in the body, no code_verifier
     try {
-      const params = new URLSearchParams({
+      const requestBody = {
         grant_type: 'authorization_code',
         client_id: config.wfx.clientId,
         client_secret: config.wfx.clientSecret,
         code: code,
         redirect_uri: customCallbackUrl || config.wfx.callbackUrl,
-        code_verifier: this.codeVerifier
-      });
+        // No code_verifier for WorkflowMax
+      };
 
       if (config.debug.auth) {
-        console.log('🔄 Token exchange request:', {
+        console.log('🔄 WFX Token exchange request (body):', {
           tokenUrl: config.wfx.tokenUrl,
           grant_type: 'authorization_code',
           client_id: config.wfx.clientId,
-          code: code.substring(0, 20) + '...',
-          redirect_uri: customCallbackUrl || config.wfx.callbackUrl,
-          code_verifier: this.codeVerifier ? this.codeVerifier.substring(0, 10) + '...' : 'none'
+          code: code.substring(0, 10) + '...',
+          redirect_uri: customCallbackUrl || config.wfx.callbackUrl
         });
       }
 
-      const response = await axios.post(config.wfx.tokenUrl, params.toString(), {
+      const response = await axios.post(config.wfx.tokenUrl, requestBody, {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
+          // WorkflowMax expects application/json for this typically, or x-www-form-urlencoded
+          // The provided documentation implies body parameters, let's stick to JSON for consistency unless it fails.
+          // If `application/json` fails, WFM might want `application/x-www-form-urlencoded` and `params.toString()` for body.
+          'Content-Type': 'application/json', 
+          'Accept': 'application/json'
         }
       });
 
       this.accessToken = response.data.access_token;
       this.refreshToken = response.data.refresh_token;
+      // Calculate expiry based on 'expires_in' (seconds)
       this.tokenExpiry = Date.now() + (response.data.expires_in * 1000);
 
       if (config.debug.auth) {
-        console.log('✅ Token exchange successful:', {
-          access_token: this.accessToken ? this.accessToken.substring(0, 20) + '...' : 'none',
+        console.log('✅ WFX Token exchange successful:', {
+          access_token: this.accessToken ? this.accessToken.substring(0, 10) + '...' : 'none',
           refresh_token: this.refreshToken ? 'received' : 'none',
           expires_in: response.data.expires_in
         });
@@ -194,29 +252,10 @@ class WFXApiClient {
       await this.saveTokens();
       return response.data;
     } catch (error) {
-      // Handle specific PKCE errors
-      if (error.response?.data?.error === 'invalid_grant' && 
-          error.response?.data?.error_description?.includes('code verifier')) {
-        console.error('PKCE verification failed. Please try authenticating again.');
-        await this.clearTokens();
-        throw new Error('PKCE verification failed. The authorization code may have expired or been used. Please try authenticating again.');
-      }
-      
-      // Handle invalid code errors
-      if (error.response?.data?.error === 'invalid_request' && 
-          error.response?.data?.hint?.includes('decrypt')) {
-        console.error('Authorization code is invalid or expired. Please try authenticating again.');
-        await this.clearTokens();
-        throw new Error('The authorization code is invalid or has expired. Please try authenticating again.');
-      }
-
-      console.error('Error exchanging code for token:', error.response?.data || error.message);
-      
-      // Log detailed error for debugging
+      console.error('Error exchanging code for token (WFX flow):', error.response?.data || error.message);
       if (error.response?.data) {
-        console.error('OAuth Error Details:', JSON.stringify(error.response.data, null, 2));
+        console.error('WFX OAuth Error Details:', JSON.stringify(error.response.data, null, 2));
       }
-      
       throw error;
     }
   }
@@ -250,7 +289,7 @@ class WFXApiClient {
       });
 
       this.accessToken = response.data.access_token;
-      this.refreshToken = response.data.refresh_token;
+      this.refreshToken = response.data.refresh_token || this.refreshToken; // Keep old refresh token if new one not provided
       this.tokenExpiry = Date.now() + (response.data.expires_in * 1000);
 
       if (config.debug.auth) {
@@ -374,16 +413,36 @@ class WFXApiClient {
         console.log(`  Response data length: ${JSON.stringify(response.data).length} chars`);
       }
       
+      // Parse XML response if it's a string starting with <?xml
+      let responseData = response.data;
+      if (typeof responseData === 'string' && responseData.trim().startsWith('<?xml')) {
+        try {
+          const parser = new xml2js.Parser({
+            explicitArray: false,
+            ignoreAttrs: true,
+            tagNameProcessors: [xml2js.processors.stripPrefix]
+          });
+          responseData = await parser.parseStringPromise(responseData);
+          
+          if (config.debug.api) {
+            console.log(`  Parsed XML response`);
+          }
+        } catch (xmlError) {
+          console.error('Failed to parse XML response:', xmlError);
+          throw new Error('Invalid XML response from API');
+        }
+      }
+      
       // Cache GET responses
       if (method === 'GET' && useCache) {
         const cacheKey = this.getCacheKey(endpoint, data);
         this.cache.set(cacheKey, {
-          data: response.data,
+          data: responseData,
           timestamp: Date.now()
         });
       }
 
-      return response.data;
+      return responseData;
     } catch (error) {
       // Handle 403 errors by clearing invalid tokens
       if (error.response?.status === 403) {

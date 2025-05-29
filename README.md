@@ -73,10 +73,10 @@ A powerful tool for comparing GPS trip data from CSV files with WorkflowMax time
 For development, use [ngrok](https://ngrok.com):
 
 ```bash
-# Start ngrok to tunnel port 3001
+# Start ngrok to tunnel port 3001 (for the auth callback server)
 ngrok http 3001
 
-# Update .env with the ngrok URL
+# Update .env with the ngrok URL if it differs from the one used by ngrok
 CALLBACK_URL=https://your-ngrok-url.ngrok-free.app/oauth/callback
 ```
 
@@ -110,6 +110,7 @@ If automatic authentication doesn't work:
 ```bash
 npm start
 # Dashboard opens at http://localhost:3000
+# Ngrok should be running separately, forwarding port 3001 for OAuth callbacks
 ```
 
 ### 2. Add Staff Configuration
@@ -213,6 +214,12 @@ Enable debug logging in `.env`:
 DEBUG_AUTH=true
 DEBUG_API=true
 ```
+
+### Ngrok / Callback Issues
+- Ensure ngrok is running and forwarding to port **3001** (`ngrok http 3001`).
+- The `CALLBACK_URL` in your `.env` file must exactly match the HTTPS URL provided by ngrok.
+- The Redirect URI in your WorkflowMax OAuth application settings must also exactly match this ngrok URL.
+- The `npm run auth` script starts a temporary server on port 3001 to receive the OAuth callback. Ensure this port is free.
 
 ## Security Notes
 

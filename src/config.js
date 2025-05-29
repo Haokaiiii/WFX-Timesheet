@@ -31,9 +31,9 @@ module.exports = {
   // Staff Configuration - Easy to add new staff
   staff: {
     'Ali_M': {
-      fullName: 'Ali Majid',
+      fullName: 'Ali Moutasallem',
       homeAddress: '4 Columbine Avenue, Bankstown New South Wales 2200, Australia',
-      wfxId: 'wfx_staff_id_ali', // Update with actual WFX staff ID
+      wfxId: '9e3cbbee-8a36-4287-b858-118e53598510', // Ali Moutasallem's UUID from WorkflowMax
       defaultHourlyRate: 45.00,
       vehicleId: 'VEH001'
     },

@@ -5,15 +5,17 @@ const fs = require('fs').promises;
 const config = require('./config');
 const TimesheetComparison = require('./timesheetComparison');
 const chalk = require('chalk');
+const WorkflowMaxAuthManager = require('./auth-workflowmax');
 const WFXApiClient = require('./wfxApi');
 
-// Create a singleton instance of WFX client
-const wfxClient = new WFXApiClient();
+// Create a singleton instance of Auth Manager for status checks
+const authManager = new WorkflowMaxAuthManager();
 
 const app = express();
 const PORT = config.server.port;
 
 // Middleware
+app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'webapp')));
 
@@ -61,21 +63,16 @@ app.post('/api/compare', async (req, res) => {
   try {
     const { staffId, startDate, endDate } = req.body;
     
-    // Validate inputs
     if (!staffId || !startDate || !endDate) {
       return res.status(400).json({ error: 'Missing required parameters: staffId, startDate, endDate' });
     }
-    
-    // Check if staff exists
     if (!config.staff[staffId]) {
       return res.status(400).json({ error: 'Staff not found' });
     }
     
-    // Check if CSV file exists
     const csvPath = path.join(config.directories.csvInput, `${staffId}.csv`);
     await fs.access(csvPath);
     
-    // Perform comparison
     const comparison = new TimesheetComparison();
     await comparison.compareTimesheet(
       staffId, 
@@ -84,10 +81,8 @@ app.post('/api/compare', async (req, res) => {
       new Date(endDate)
     );
     
-    // Cache results
     comparisonCache[staffId] = comparison.comparisonResults[staffId];
     
-    // Add processing time to response
     const processingTime = Date.now() - startTime;
     const result = comparison.comparisonResults[staffId];
     result.metadata.apiProcessingTime = processingTime;
@@ -106,11 +101,9 @@ app.post('/api/compare', async (req, res) => {
 app.get('/api/results/:staffId', (req, res) => {
   const { staffId } = req.params;
   const result = comparisonCache[staffId];
-  
   if (!result) {
     return res.status(404).json({ error: 'No results found for this staff member' });
   }
-  
   res.json(result);
 });
 
@@ -128,162 +121,55 @@ app.get('/api/summary', (req, res) => {
     totalTrips: result.csvStats?.totalTrips || 0,
     processedAt: result.metadata.processedAt
   }));
-  
-  // Sort by accuracy (lowest first to highlight issues)
   summary.sort((a, b) => a.accuracy - b.accuracy);
-  
   res.json(summary);
 });
 
-// Clear cache endpoint
 app.post('/api/cache/clear', (req, res) => {
   comparisonCache = {};
+  console.log(chalk.yellow('Comparison cache cleared. WFX API cache in WFXApiClient will be cleared on next API call if implementation supports it.'));
   res.json({ message: 'Cache cleared successfully' });
 });
 
-// OAuth callback handling
-app.get('/oauth/callback', async (req, res) => {
-  const { code, state, error } = req.query;
-  
-  if (error) {
-    return res.send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; padding: 2rem;">
-          <h2>❌ Authentication Failed</h2>
-          <p>Error: ${error}</p>
-          <p>Please close this window and try again.</p>
-        </body>
-      </html>
-    `);
-  }
-  
-  if (!code) {
-    return res.send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; padding: 2rem;">
-          <h2>❌ No Authorization Code</h2>
-          <p>No authorization code was received.</p>
-          <p>Please close this window and try again.</p>
-        </body>
-      </html>
-    `);
-  }
-  
+// Add authentication status endpoint using WorkflowMaxAuthManager
+app.get('/api/auth/status', async (req, res) => {
   try {
-    // Load code verifier if it exists
-    const verifierPath = path.join(config.directories.data, 'code_verifier.tmp');
-    let codeVerifier;
-    try {
-      codeVerifier = await fs.readFile(verifierPath, 'utf8');
-      // Clean up verifier file
-      await fs.unlink(verifierPath).catch(() => {});
-    } catch (e) {
-      console.log('No code verifier found, proceeding without PKCE');
-    }
-
-    // Exchange code for token
-    console.log(chalk.green('\n📥 OAuth callback received with code'));
-    
-    // If we have a code verifier, set it on the client
-    if (codeVerifier) {
-      wfxClient.codeVerifier = codeVerifier;
-    }
-    
-    const tokens = await wfxClient.exchangeCodeForToken(code);
-    console.log(chalk.green('✅ Tokens exchanged successfully'));
-    
-    // Test the API connection immediately
-    try {
-      const staff = await wfxClient.getStaff();
-      console.log(chalk.green(`✅ API test successful - ${staff.length} staff members found`));
-    } catch (testError) {
-      console.error(chalk.red('❌ API test failed after authentication:'), testError.message);
-    }
-    
-    // Success page
-    res.send(`
-      <html>
-        <head>
-          <style>
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-              padding: 2rem;
-              background: #f5f5f7;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              min-height: 80vh;
-            }
-            .container {
-              background: white;
-              padding: 2rem;
-              border-radius: 8px;
-              box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-              max-width: 500px;
-              text-align: center;
-            }
-            h2 { color: #28a745; margin-bottom: 1rem; }
-            .success-msg {
-              background: #d4edda;
-              color: #155724;
-              padding: 1rem;
-              border-radius: 4px;
-              margin: 1rem 0;
-            }
-            button {
-              background: #4472C4;
-              color: white;
-              border: none;
-              padding: 0.75rem 1.5rem;
-              border-radius: 4px;
-              cursor: pointer;
-              font-size: 1rem;
-              margin-top: 1rem;
-            }
-            button:hover {
-              background: #3056a0;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h2>✅ Authentication Successful!</h2>
-            <div class="success-msg">
-              <p>You have been successfully authenticated with WorkflowMax.</p>
-              <p>You can now close this window and use the dashboard.</p>
-            </div>
-            <button onclick="window.close()">Close Window</button>
-          </div>
-        </body>
-      </html>
-    `);
+    console.log(chalk.gray('📋 Checking auth status...'));
+    const status = await authManager.checkAuthStatus();
+    console.log(chalk.gray('📋 Auth status result:'), status);
+    res.json(status);
   } catch (error) {
-    // Error page
-    res.send(`
-      <html>
-        <body style="font-family: Arial, sans-serif; padding: 2rem;">
-          <h2>❌ Authentication Failed</h2>
-          <p>Error: ${error.message}</p>
-          <p>Details: ${JSON.stringify(error.response?.data || {})}</p>
-          <p>Please close this window and check your OAuth credentials.</p>
-        </body>
-      </html>
-    `);
+    console.error(chalk.red('Error checking auth status in dashboard:'), error);
+    console.error(chalk.red('Error stack:'), error.stack);
+    res.status(500).json({ authenticated: false, reason: 'Error checking status: ' + error.message });
   }
 });
 
-// Add authentication status endpoint
-app.get('/api/auth/status', (req, res) => {
-  res.json({
-    authenticated: wfxClient.isAuthenticated(),
-    hasTokens: !!wfxClient.accessToken
-  });
-});
-
-// Add authentication URL endpoint
-app.get('/api/auth/url', (req, res) => {
-  const authUrl = wfxClient.getAuthorizationUrl();
-  res.json({ url: authUrl });
+// Add endpoint to fetch actual WFX staff list
+app.get('/api/wfx/staff', async (req, res) => {
+  try {
+    const wfxClient = new WFXApiClient();
+    const staff = await wfxClient.getStaff();
+    console.log(chalk.gray('📋 WFX Staff API Response:'));
+    console.log(chalk.gray(`  Type: ${typeof staff}`));
+    console.log(chalk.gray(`  Is Array: ${Array.isArray(staff)}`));
+    if (staff && typeof staff === 'object') {
+      console.log(chalk.gray(`  Keys: ${Object.keys(staff).join(', ')}`));
+      // Log first few items to understand structure
+      if (Array.isArray(staff) && staff.length > 0) {
+        console.log(chalk.gray(`  First item: ${JSON.stringify(staff[0], null, 2)}`));
+      } else if (staff.Staff && Array.isArray(staff.Staff)) {
+        console.log(chalk.gray(`  Staff array length: ${staff.Staff.length}`));
+        if (staff.Staff.length > 0) {
+          console.log(chalk.gray(`  First staff: ${JSON.stringify(staff.Staff[0], null, 2)}`));
+        }
+      }
+    }
+    res.json(staff);
+  } catch (error) {
+    console.error(chalk.red('Error fetching WFX staff:'), error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Create webapp directory and HTML file if they don't exist
@@ -319,6 +205,8 @@ async function startServer() {
     console.log(chalk.gray('  • GET  /api/summary - Get all summaries'));
     console.log(chalk.gray('  • GET  /api/stats - Performance statistics'));
     console.log(chalk.gray('  • POST /api/cache/clear - Clear cache'));
+    console.log(chalk.gray('\nRun `npm run auth-status` to check WFX auth.'));
+    console.log(chalk.gray('Run `npm run auth` to authenticate with WorkflowMax.'));
     console.log(chalk.gray('\nPress Ctrl+C to stop the server'));
   });
 }
@@ -357,6 +245,19 @@ function getDefaultHTML() {
         .stats-indicator {
             font-size: 0.9rem;
             opacity: 0.9;
+        }
+        
+        .auth-status {
+            font-size: 0.9rem;
+            margin-right: 1rem;
+        }
+        
+        .auth-status.authenticated {
+            color: #90EE90;
+        }
+        
+        .auth-status.not-authenticated {
+            color: #FFB6C1;
         }
         
         .container {
@@ -559,19 +460,34 @@ function getDefaultHTML() {
         .clear-cache-btn:hover {
             background-color: #5a6268;
         }
+        
+        #authMessage {
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+        }
     </style>
 </head>
 <body>
     <div class="header">
         <h1>WFX Timesheet Comparison Dashboard</h1>
-        <div class="stats-indicator" id="statsIndicator">
-            🚀 Ready
+        <div style="display: flex; align-items: center;">
+            <div class="auth-status" id="authStatusIndicator">Checking auth...</div>
+            <div class="stats-indicator" id="statsIndicator">
+                🚀 Ready
+            </div>
         </div>
     </div>
     
     <div class="container">
+        <!-- Authentication Message -->
+        <div class="card" id="authMessage" style="display: none;">
+            <h2>⚠️ Authentication Required</h2>
+            <p>You need to authenticate with WorkflowMax before you can use this dashboard.</p>
+            <p>Run <code>npm run auth</code> in your terminal to authenticate.</p>
+        </div>
+        
         <!-- Controls -->
-        <div class="card">
+        <div class="card" id="controlsCard">
             <h2>Run Comparison</h2>
             <div class="controls">
                 <div class="form-group">
@@ -617,7 +533,7 @@ function getDefaultHTML() {
         
         // Initialize
         document.addEventListener('DOMContentLoaded', async () => {
-            await loadStaff();
+            await checkAuthentication();
             setDefaultDates();
             await loadSummary();
             startStatsUpdater();
@@ -636,6 +552,39 @@ function getDefaultHTML() {
                 indicator.textContent = \`⚡ \${stats.requests} requests | \${Math.round(stats.uptime/60)}m uptime\`;
             } catch (error) {
                 console.error('Stats update failed:', error);
+            }
+        }
+        
+        async function checkAuthentication() {
+            const authStatusIndicator = document.getElementById('authStatusIndicator');
+            const authMessageCard = document.getElementById('authMessage');
+            const controlsCard = document.getElementById('controlsCard');
+            const compareBtn = document.getElementById('compareBtn');
+            try {
+                const response = await fetch('/api/auth/status');
+                const status = await response.json();
+                if (status.authenticated) {
+                    authStatusIndicator.textContent = '✅ Authenticated with WFX';
+                    authStatusIndicator.className = 'auth-status authenticated';
+                    authMessageCard.style.display = 'none';
+                    controlsCard.style.opacity = 1;
+                    compareBtn.disabled = false;
+                    loadStaff();
+                } else {
+                    authStatusIndicator.textContent = '❌ Not Authenticated with WFX';
+                    authStatusIndicator.className = 'auth-status not-authenticated';
+                    authMessageCard.style.display = 'block';
+                    controlsCard.style.opacity = 0.5;
+                    compareBtn.disabled = true;
+                    document.getElementById('staffSelect').innerHTML = '<option value="">Authenticate first</option>';
+                }
+            } catch (error) {
+                console.error('Failed to check auth status:', error);
+                authStatusIndicator.textContent = 'Auth status check failed';
+                authStatusIndicator.className = 'auth-status not-authenticated';
+                authMessageCard.style.display = 'block';
+                authMessageCard.querySelector('p:last-of-type').textContent = 'Error checking authentication status. Ensure the backend server is running and check console.';
+                compareBtn.disabled = true;
             }
         }
         

@@ -221,16 +221,124 @@ class TimesheetComparison {
       const toDate = endDate.toISOString().split('T')[0];
 
       // Get timesheets with caching
-      const timesheets = await this.wfxClient.getTimesheets(fromDate, toDate);
+      const response = await this.wfxClient.getTimesheets(fromDate, toDate);
+      
+      // Log the response structure to understand it
+      if (config.debug.api) {
+        console.log(chalk.gray('  • WFX API Response structure:'));
+        console.log(chalk.gray(`    Type: ${typeof response}`));
+        console.log(chalk.gray(`    Is Array: ${Array.isArray(response)}`));
+        if (response && typeof response === 'object') {
+          console.log(chalk.gray(`    Keys: ${Object.keys(response).join(', ')}`));
+          // Log the structure to understand XML parsed format
+          if (response.Response) {
+            console.log(chalk.gray(`    Response keys: ${Object.keys(response.Response).join(', ')}`));
+            if (response.Response.TimesheetList) {
+              console.log(chalk.gray(`    TimesheetList type: ${typeof response.Response.TimesheetList}`));
+              console.log(chalk.gray(`    TimesheetList keys: ${Object.keys(response.Response.TimesheetList).join(', ')}`));
+            }
+          }
+        }
+      }
+      
+      // Handle different response formats
+      let timesheets = [];
+      if (Array.isArray(response)) {
+        timesheets = response;
+      } else if (response && response.Timesheets && Array.isArray(response.Timesheets)) {
+        // WorkflowMax returns data wrapped in Timesheets property
+        timesheets = response.Timesheets;
+      } else if (response && response.TimeSheet && Array.isArray(response.TimeSheet)) {
+        // Alternative property name
+        timesheets = response.TimeSheet;
+      } else if (response && response.Response && response.Response.TimesheetList) {
+        // Handle parsed XML structure from WorkflowMax
+        const timesheetList = response.Response.TimesheetList;
+        if (timesheetList.Timesheet) {
+          // If single timesheet, make it an array
+          timesheets = Array.isArray(timesheetList.Timesheet) 
+            ? timesheetList.Timesheet 
+            : [timesheetList.Timesheet];
+          
+          console.log(chalk.gray(`  • Extracted ${timesheets.length} timesheets from XML response`));
+          
+          // Log first timesheet structure for debugging
+          if (config.debug.api && timesheets.length > 0) {
+            console.log(chalk.gray(`  • First timesheet structure: ${Object.keys(timesheets[0]).join(', ')}`));
+          }
+        }
+      } else if (response && response.Response && response.Response.Times) {
+        // Handle parsed XML structure with Times property
+        const timesList = response.Response.Times;
+        if (timesList.Time) {
+          // If single entry, make it an array
+          timesheets = Array.isArray(timesList.Time)
+            ? timesList.Time
+            : [timesList.Time];
+
+          console.log(chalk.gray(`  • Extracted ${timesheets.length} timesheets from XML response (Times property)`));
+
+          // Log first timesheet structure for debugging
+          if (config.debug.api && timesheets.length > 0 && typeof timesheets[0] === 'object' && timesheets[0] !== null) {
+            console.log(chalk.gray(`  • First timesheet structure (Times property): ${Object.keys(timesheets[0]).join(', ')}`));
+            // Detailed log for the 'Staff' property of the first timesheet
+            if (timesheets[0].Staff) {
+              console.log(chalk.gray(`    • ts.Staff type: ${typeof timesheets[0].Staff}`));
+              if (typeof timesheets[0].Staff === 'object' && timesheets[0].Staff !== null) {
+                console.log(chalk.gray(`    • ts.Staff keys: ${Object.keys(timesheets[0].Staff).join(', ')}`));
+                try {
+                  console.log(chalk.gray(`    • ts.Staff value: ${JSON.stringify(timesheets[0].Staff)}`));
+                } catch (e) {
+                  console.log(chalk.gray(`    • ts.Staff value: (circular structure or error serializing)`));
+                }
+              } else {
+                console.log(chalk.gray(`    • ts.Staff value: ${timesheets[0].Staff}`));
+              }
+            } else {
+              console.log(chalk.gray(`    • ts.Staff property not found in first timesheet.`));
+            }
+          } else if (config.debug.api && timesheets.length > 0) {
+            console.log(chalk.gray(`  • First timesheet (Times property) is not an object or is null`));
+          }
+        }
+      } else {
+        console.warn(chalk.yellow(`  ⚠️  Unexpected WFX API response format. Expected array or object with Timesheets or Times property.`));
+        return {};
+      }
+      
+      console.log(chalk.gray(`  • Found ${timesheets.length} total timesheet entries`));
       
       // Filter for specific staff (case-insensitive)
-      const staffTimesheets = timesheets.filter(ts => 
-        ts.staffId && ts.staffId.toString().toLowerCase() === wfxStaffId.toLowerCase()
-      );
+      // WorkflowMax XML uses StaffUUID instead of staffId. The new format seems to use 'Staff', which might be an object or a direct ID.
+      const staffTimesheets = timesheets.filter(ts => {
+        let staffIdentifier = null;
+        
+        if (ts.Staff) { // Check the 'Staff' property first, based on new API response structure
+          if (typeof ts.Staff === 'object' && ts.Staff !== null) {
+            // If 'Staff' is an object, attempt to get UUID or ID from it. Common patterns for Xero API.
+            staffIdentifier = ts.Staff.UUID || ts.Staff.ID || ts.Staff.Id || ts.Staff.UserID; 
+          } else {
+            // If 'Staff' is a primitive (e.g., string ID), use it directly
+            staffIdentifier = ts.Staff;
+          }
+        }
+
+        // Fallback to older known keys if 'Staff' property didn't yield an ID or wasn't present
+        if (!staffIdentifier) {
+          staffIdentifier = ts.StaffUUID || ts.staffId || ts.StaffID;
+        }
+        
+        return staffIdentifier && staffIdentifier.toString().toLowerCase() === wfxStaffId.toLowerCase();
+      });
+      
+      console.log(chalk.gray(`  • Filtered to ${staffTimesheets.length} entries for staff ${wfxStaffId}`));
 
       // Group by date efficiently
       const dailyTimesheets = staffTimesheets.reduce((grouped, entry) => {
-        const date = entry.date;
+        // WorkflowMax XML uses Date field
+        const date = entry.Date || entry.date;
+        if (!date) return grouped;
+        
         if (!grouped[date]) {
           grouped[date] = {
             date,
@@ -242,20 +350,46 @@ class TimesheetComparison {
         }
 
         grouped[date].entries.push(entry);
-        grouped[date].totalMinutes += entry.minutes || 0;
+        
+        // Handle both Minutes and TotalMinutes fields
+        const minutes = parseFloat(entry.Minutes || entry.TotalMinutes || entry.minutes || 0);
+        grouped[date].totalMinutes += minutes;
         grouped[date].totalHours = (grouped[date].totalMinutes / 60).toFixed(2);
         
-        if (entry.job) {
+        // Extract job information if available
+        const job = entry.Job || entry.job;
+        if (job) {
           grouped[date].jobs.push({
-            id: entry.job.id,
-            name: entry.job.name,
-            client: entry.job.client,
-            minutes: entry.minutes
+            id: job.ID || job.UUID || job.id,
+            name: job.Name || job.name,
+            client: job.Client || job.client,
+            minutes: minutes
           });
         }
 
         return grouped;
       }, {});
+
+      // Log the grouped dailyTimesheets before returning
+      if (config.debug.api) {
+        console.log(chalk.gray('  • Grouped WFX Daily Timesheets (before returning from fetchWfxTimesheet):'));
+        try {
+          // Attempt to stringify, but be mindful of large objects or circular refs
+          const dailyTimesheetsStr = JSON.stringify(dailyTimesheets, null, 2);
+          if (dailyTimesheetsStr.length > 2000) { // Limit log length
+            console.log(chalk.gray(dailyTimesheetsStr.substring(0, 2000) + '... [truncated]'));
+          } else {
+            console.log(chalk.gray(dailyTimesheetsStr));
+          }
+        } catch (e) {
+          console.log(chalk.yellow(`  ⚠️  Could not stringify dailyTimesheets for logging: ${e.message}`));
+          // Fallback: log keys or a summary
+          console.log(chalk.gray(`    Dates with entries: ${Object.keys(dailyTimesheets).join(', ')}`));
+          Object.keys(dailyTimesheets).slice(0, 5).forEach(date => { // Log first 5 for brevity
+            console.log(chalk.gray(`    ${date}: ${dailyTimesheets[date].totalHours} hours from ${dailyTimesheets[date].entries.length} entries`));
+          });
+        }
+      }
 
       return dailyTimesheets;
     } catch (error) {

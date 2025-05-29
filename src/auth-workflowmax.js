@@ -8,6 +8,8 @@ const open = require('open');
 const config = require('./config');
 const jwt = require('jsonwebtoken');
 
+const AUTH_CALLBACK_PORT = 3001; // Dedicated port for auth callback
+
 /**
  * WorkflowMax OAuth 2.0 Authentication Manager
  * Implements OAuth 2.0 flow according to WorkflowMax documentation
@@ -204,11 +206,17 @@ class WorkflowMaxAuthManager {
     // Extract organization ID from JWT if possible
     try {
       const decoded = jwt.decode(tokenData.access_token);
-      if (decoded && decoded.org) {
+      if (decoded && decoded.org_ids && decoded.org_ids.length > 0) {
+        // Use the first organization ID from the array
+        tokens.organization_id = decoded.org_ids[0];
+        console.log(chalk.gray(`   Organization ID extracted: ${tokens.organization_id}`));
+      } else if (decoded && decoded.org) {
+        // Fallback to 'org' field if it exists
         tokens.organization_id = decoded.org;
       }
-    } catch {
+    } catch (err) {
       // JWT decode failed, not critical
+      console.log(chalk.yellow('   Warning: Could not extract organization ID from JWT'));
     }
 
     await fs.mkdir(path.dirname(this.tokenPath), { recursive: true });
@@ -292,38 +300,32 @@ class WorkflowMaxAuthManager {
       return { authenticated: false, reason: 'No tokens found' };
     }
 
-    // Test API connection with WorkflowMax headers
-    try {
-      const response = await axios.get(`${config.wfx.baseUrl}/staff/current`, {
-        headers: {
-          'authorization': `Bearer ${tokens.access_token}`,
-          'account_id': tokens.organization_id || config.wfx.accountId,
-          'Accept': 'application/json'
-        },
-        timeout: 10000
-      });
-
-      return {
-        authenticated: true,
-        user: response.data,
-        expiresAt: new Date(tokens.expires_at),
-        organizationId: tokens.organization_id
-      };
-    } catch (error) {
-      if (error.response?.status === 401) {
-        // Try to refresh token
-        if (tokens.refresh_token) {
-          try {
-            await this.refreshAccessToken();
-            return await this.checkAuthStatus(); // Retry with new token
-          } catch {
-            return { authenticated: false, reason: 'Token refresh failed' };
-          }
+    // Check if access token is expired
+    if (tokens.expires_at && Date.now() > tokens.expires_at) {
+      // Try to refresh token
+      if (tokens.refresh_token) {
+        try {
+          await this.refreshAccessToken();
+          // After refresh, load the new tokens
+          const newTokens = await this.loadTokens();
+          return {
+            authenticated: true,
+            expiresAt: new Date(newTokens.expires_at),
+            organizationId: newTokens.organization_id || 'Unknown'
+          };
+        } catch (err) {
+          return { authenticated: false, reason: 'Token refresh failed: ' + err.message };
         }
-        return { authenticated: false, reason: 'Token invalid or expired' };
       }
-      return { authenticated: false, reason: error.message };
+      return { authenticated: false, reason: 'Token expired and no refresh token available' };
     }
+
+    // Token is valid
+    return {
+      authenticated: true,
+      expiresAt: new Date(tokens.expires_at),
+      organizationId: tokens.organization_id || 'Unknown'
+    };
   }
 
   /**
@@ -363,7 +365,7 @@ class WorkflowMaxAuthManager {
   /**
    * Start local server for callback handling
    */
-  async startCallbackServer(port = 3001) {
+  async startCallbackServer(port = AUTH_CALLBACK_PORT) {
     const app = express();
     
     // Parse JSON and URL-encoded bodies
@@ -512,18 +514,28 @@ class WorkflowMaxAuthManager {
       }
     });
 
-    // Status endpoint
+    // Status endpoint (can be useful for the auth server itself if needed)
     app.get('/api/auth/status', async (req, res) => {
       const status = await this.checkAuthStatus();
       res.json(status);
     });
 
     // Start server
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const server = app.listen(port, () => {
-        console.log(chalk.green(`\n🚀 Auth callback server running on port ${port}`));
+        console.log(chalk.green(`
+🚀 Auth callback server running on port ${port}`));
         console.log(chalk.gray('Waiting for OAuth callback...'));
         resolve(server);
+      }).on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(chalk.red(`❌ Port ${port} is already in use. Auth callback server could not start.`));
+          console.error(chalk.yellow(`   Ensure no other process is using port ${port}.`));
+          console.error(chalk.yellow(`   This port is dedicated for the OAuth callback during 'npm run auth'.`));
+          resolve(null); // Resolve with null, auth flow might still proceed via browser if ngrok is set up
+        } else {
+          reject(err); // Propagate other errors
+        }
       });
     });
   }
@@ -544,7 +556,6 @@ if (require.main === module) {
           const status = await authManager.checkAuthStatus();
           if (status.authenticated) {
             console.log(chalk.green('✅ Authenticated'));
-            console.log(chalk.gray(`   User: ${JSON.stringify(status.user)}`));
             console.log(chalk.gray(`   Organization ID: ${status.organizationId}`));
             console.log(chalk.gray(`   Expires: ${status.expiresAt}`));
           } else {
@@ -564,7 +575,6 @@ if (require.main === module) {
 
         case 'auth':
         default:
-          // Check current status
           const currentStatus = await authManager.checkAuthStatus();
           if (currentStatus.authenticated) {
             console.log(chalk.green('✅ Already authenticated!'));
@@ -572,19 +582,23 @@ if (require.main === module) {
             return;
           }
 
-          // Start auth flow
           await authManager.startBrowserFlow();
           
-          // Start callback server
-          await authManager.startCallbackServer(config.server.port);
+          // Start callback server on the DEDICATED port
+          const callbackServer = await authManager.startCallbackServer(AUTH_CALLBACK_PORT); 
           
-          // Keep server running
-          console.log(chalk.gray('\nWaiting for authentication callback...'));
-          console.log(chalk.gray('Press Ctrl+C to cancel'));
+          if (callbackServer) {
+            console.log(chalk.gray('\nIf the browser did not open, or to re-attempt, use the URL from the logs.'));
+            console.log(chalk.gray('Waiting for authentication callback... Press Ctrl+C to cancel if stuck.'));
+            // Keep alive for callback, will exit via process.exit(0) in callback handler on success
+          } else {
+            console.log(chalk.yellow("Auth callback server couldn't start. Manual URL paste might be needed if browser flow fails."));
+            console.log(chalk.gray("Ensure ngrok is pointing to port 3001 and that port 3001 is free for the auth script."))
+          }
           break;
       }
     } catch (error) {
-      console.error(chalk.red('Error:'), error.message);
+      console.error(chalk.red('Error in auth script:'), error.message);
       process.exit(1);
     }
   }
